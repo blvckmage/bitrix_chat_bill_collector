@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: bitrix-delivery-bot
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: BITRIX_WEBHOOK_URL
+        sync: false
+      - key: BITRIX_CHAT_ID
+        sync: false
+      - key: MANAGER_USER_ID
+        sync: false
+      - key: SECRET_TOKEN
+        sync: false
