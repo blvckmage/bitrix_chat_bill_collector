@@ -13,8 +13,15 @@ BITRIX_CHAT_ID = os.getenv("BITRIX_CHAT_ID", "")
 # ID пользователя — заведующего складом
 MANAGER_USER_ID = os.getenv("MANAGER_USER_ID", "")
 
-# ID зарегистрированного чат-бота (для отправки сообщений от его имени через imbot.message.add)
+# ID зарегистрированного чат-бота (заполняется автоматически после установки приложения)
 BITRIX_BOT_ID = os.getenv("BITRIX_BOT_ID", "")
+
+# OAuth credentials локального приложения Битрикс24
+BITRIX_CLIENT_ID = os.getenv("BITRIX_CLIENT_ID", "")
+BITRIX_CLIENT_SECRET = os.getenv("BITRIX_CLIENT_SECRET", "")
+
+# Куда сохраняем актуальные OAuth-токены (access_token, refresh_token)
+AUTH_STORE_PATH = os.getenv("AUTH_STORE_PATH", "./auth.json")
 
 # Секретный токен — Битрикс24 присылает его вместе с событием, проверяем подлинность запроса
 SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")

@@ -41,10 +41,15 @@ def build_report_text() -> str:
 
 
 async def build_and_send_report() -> None:
-    """Ежедневный отчёт заведующему складу в личку."""
+    """Ежедневный отчёт заведующему складу в личку.
+    Берёт OAuth-токен из auth_store (обновляя при необходимости).
+    """
+    import auth_store
     text = build_report_text()
-    if MANAGER_USER_ID:
-        await send_message_to_user(MANAGER_USER_ID, text)
+    if not MANAGER_USER_ID:
+        return
+    auth_context = await auth_store.refresh_if_needed()
+    await send_message_to_user(MANAGER_USER_ID, text, auth_context=auth_context)
 
 
 async def send_report_to_chat(chat_id: str | int, auth_context: dict | None = None) -> None:

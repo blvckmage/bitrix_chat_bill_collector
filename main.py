@@ -15,8 +15,9 @@ from config import (
     REPORT_MINUTE,
 )
 from storage import init_storage, add_delivery
-from bitrix import send_message_to_chat, get_user_name
+from bitrix import send_message_to_chat, get_user_name, register_chatbot
 from report import build_and_send_report, send_report_to_chat
+import auth_store
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("bot")
@@ -85,10 +86,25 @@ async def bitrix_webhook(request: Request) -> dict:
     # Имя события и полезная нагрузка
     event = body.get("event") or ""
 
-    # Примечание: бот зарегистрирован в режиме «Передавать боту сообщения»,
-    # который не выдаёт OAuth access_token. Поэтому ответы уходят через
-    # im.message.add от имени владельца вебхука, а не от лица бота.
+    # OAuth-токены из события (локальное приложение)
+    access_token = body.get("auth[access_token]")
+    client_endpoint = body.get("auth[client_endpoint]")
+    refresh_token = body.get("auth[refresh_token]")
+    expires_in = body.get("auth[expires_in]") or 3600
     auth_context = None
+    if access_token and client_endpoint:
+        auth_context = {
+            "access_token": access_token,
+            "client_endpoint": client_endpoint,
+        }
+        # Сохраняем самые свежие токены — пригодится фоновому отчёту в 17:30
+        auth_store.save({
+            "access_token": access_token,
+            "refresh_token": refresh_token or "",
+            "client_endpoint": client_endpoint,
+            "domain": body.get("auth[domain]", ""),
+            "expires_in": expires_in,
+        })
     # Поля сообщения приходят с префиксом data[PARAMS][...] или data[FIELDS_AFTER][...].
     # Извлекаем стандартные поля события ONIMMESSAGEADD / OnImBotMessageAdd.
     chat_id = (
@@ -145,6 +161,62 @@ async def bitrix_webhook(request: Request) -> dict:
         auth_context=auth_context,
     )
     return {"status": "ok", "saved": {"invoice": invoice, "courier": courier_name}}
+
+
+@app.post("/bitrix/install")
+@app.get("/bitrix/install")
+async def bitrix_install(request: Request):
+    """Обработчик установки локального приложения.
+    Битрикс POSTит сюда OAuth-токены при первой установке. Мы их сохраняем
+    и сразу же регистрируем чат-бота через imbot.register.
+    """
+    from fastapi.responses import HTMLResponse
+
+    if request.method == "POST":
+        form = await request.form()
+        data = dict(form)
+    else:
+        data = dict(request.query_params)
+
+    logger.info("Получен запрос на установку. Ключи: %s", list(data.keys()))
+
+    # Битрикс при установке локального приложения присылает:
+    # AUTH_ID (access_token), REFRESH_ID (refresh_token), AUTH_EXPIRES, DOMAIN, member_id и т.д.
+    access_token = data.get("AUTH_ID") or data.get("auth[access_token]")
+    refresh_token = data.get("REFRESH_ID") or data.get("auth[refresh_token]") or ""
+    domain = data.get("DOMAIN") or data.get("auth[domain]") or ""
+    expires_in = data.get("AUTH_EXPIRES") or data.get("auth[expires_in]") or 3600
+    client_endpoint = data.get("auth[client_endpoint]") or (f"https://{domain}/rest/" if domain else "")
+
+    if not access_token or not client_endpoint:
+        logger.warning("В запросе установки нет токенов — ничего не делаем.")
+        return HTMLResponse("<h2>Не получены токены, проверьте настройки приложения.</h2>",
+                            status_code=400)
+
+    auth_store.save({
+        "access_token": access_token,
+        "refresh_token": refresh_token,
+        "client_endpoint": client_endpoint,
+        "domain": domain,
+        "expires_in": expires_in,
+    })
+    logger.info("OAuth-токены сохранены (domain=%s)", domain)
+
+    # Зарегистрировать чат-бота
+    handler_url = str(request.url_for("bitrix_webhook"))
+    try:
+        bot_id = await register_chatbot(
+            {"access_token": access_token, "client_endpoint": client_endpoint},
+            handler_url,
+        )
+        logger.info("imbot.register результат: BOT_ID=%s", bot_id)
+        msg = f"<h2>Установка завершена ✅</h2><p>BOT_ID: <b>{bot_id}</b></p>" \
+              f"<p>Запишите BOT_ID в переменную окружения <code>BITRIX_BOT_ID</code> и перезапустите сервис.</p>"
+    except Exception as e:
+        logger.exception("Не удалось зарегистрировать бота")
+        msg = f"<h2>OAuth сохранён, но imbot.register упал</h2><pre>{e}</pre>"
+
+    return HTMLResponse(msg)
 
 
 @app.post("/admin/run-report")

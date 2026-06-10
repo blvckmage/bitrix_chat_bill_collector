@@ -1,16 +1,14 @@
-"""Клиент REST API Битрикс24.
-
-Два режима работы:
-1. Через входящий вебхук (BITRIX_WEBHOOK_URL) — от имени владельца вебхука.
-2. Через OAuth-токен бота (auth_context из события) — от имени бота.
-"""
+"""Клиент REST API Битрикс24 (через OAuth-токен локального приложения)."""
 import httpx
 
 from config import BITRIX_WEBHOOK_URL, BITRIX_BOT_ID
+import auth_store
 
 
 async def call_method(method: str, payload: dict) -> dict:
-    """Вызов метода через входящий вебхук (от имени владельца вебхука)."""
+    """Вызов метода через входящий вебхук (от имени владельца вебхука).
+    Используется как fallback, если OAuth-токенов ещё нет.
+    """
     url = f"{BITRIX_WEBHOOK_URL}{method}.json"
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(url, json=payload)
@@ -18,16 +16,28 @@ async def call_method(method: str, payload: dict) -> dict:
         return response.json()
 
 
-async def call_method_as_bot(method: str, payload: dict, auth_context: dict) -> dict:
-    """Вызов метода REST с OAuth-токеном бота (для отправки от имени бота).
+async def call_method_as_bot(method: str, payload: dict, auth_context: dict | None = None) -> dict:
+    """Вызов метода с OAuth-токеном (от имени бота / приложения).
 
-    auth_context должен содержать ключи: 'access_token' и 'client_endpoint'.
+    auth_context (опционально) — словарь с 'access_token' и 'client_endpoint'.
+    Если не задан — берётся из auth_store (для фоновых задач), с автообновлением.
     """
+    if auth_context is None:
+        auth_context = await auth_store.refresh_if_needed()
+        if not auth_context:
+            raise RuntimeError("OAuth-токены ещё не получены — установите приложение в Битрикс24")
+
+    import logging
+    log = logging.getLogger("bot")
     client_endpoint = auth_context["client_endpoint"].rstrip("/") + "/"
     url = f"{client_endpoint}{method}.json"
     body = {**payload, "auth": auth_context["access_token"]}
     async with httpx.AsyncClient(timeout=15.0) as client:
         response = await client.post(url, json=body)
+        if response.status_code >= 400:
+            log.error("Битрикс %s вернул %s: %s | payload=%s",
+                      method, response.status_code, response.text,
+                      {k: v for k, v in body.items() if k != "auth"})
         response.raise_for_status()
         return response.json()
 
@@ -35,10 +45,17 @@ async def call_method_as_bot(method: str, payload: dict, auth_context: dict) -> 
 async def send_message_to_chat(
     chat_id: str | int,
     text: str,
-    auth_context: dict | None = None,  # пока не используется (см. примечание в README)
+    auth_context: dict | None = None,
 ) -> dict:
-    """Отправить сообщение в групповой чат от имени владельца вебхука."""
+    """Отправить сообщение в групповой чат от имени бота."""
     dialog_id = f"chat{chat_id}" if str(chat_id).isdigit() else str(chat_id)
+    if BITRIX_BOT_ID:
+        return await call_method_as_bot("imbot.message.add", {
+            "BOT_ID": BITRIX_BOT_ID,
+            "DIALOG_ID": dialog_id,
+            "MESSAGE": text,
+        }, auth_context)
+    # Fallback — если бот ещё не зарегистрирован
     return await call_method("im.message.add", {"DIALOG_ID": dialog_id, "MESSAGE": text})
 
 
@@ -47,12 +64,18 @@ async def send_message_to_user(
     text: str,
     auth_context: dict | None = None,
 ) -> dict:
-    """Отправить личное сообщение пользователю от имени владельца вебхука."""
+    """Личное сообщение пользователю от имени бота."""
+    if BITRIX_BOT_ID:
+        return await call_method_as_bot("imbot.message.add", {
+            "BOT_ID": BITRIX_BOT_ID,
+            "DIALOG_ID": str(user_id),
+            "MESSAGE": text,
+        }, auth_context)
     return await call_method("im.message.add", {"DIALOG_ID": str(user_id), "MESSAGE": text})
 
 
 async def get_user_name(user_id: str | int) -> str:
-    """Получить ФИО пользователя по ID."""
+    """ФИО пользователя по ID — через входящий вебхук (не требует OAuth)."""
     try:
         data = await call_method("user.get", {"ID": str(user_id)})
         result = data.get("result") or []
@@ -63,3 +86,27 @@ async def get_user_name(user_id: str | int) -> str:
     except Exception:
         pass
     return f"User#{user_id}"
+
+
+async def register_chatbot(auth_context: dict, handler_url: str) -> int | None:
+    """Зарегистрировать чат-бота через imbot.register, используя OAuth-контекст.
+    Возвращает BOT_ID или None при неудаче."""
+    client_endpoint = auth_context["client_endpoint"].rstrip("/") + "/"
+    url = f"{client_endpoint}imbot.register.json"
+    body = {
+        "CODE": "delivery_bot",
+        "TYPE": "B",
+        "EVENT_MESSAGE_ADD": handler_url,
+        "EVENT_WELCOME_MESSAGE": handler_url,
+        "EVENT_BOT_DELETE": handler_url,
+        "PROPERTIES": {
+            "NAME": "Бот доставок",
+            "COLOR": "AQUA",
+            "WORK_POSITION": "Учёт доставок",
+        },
+        "auth": auth_context["access_token"],
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(url, json=body)
+        data = r.json()
+    return data.get("result")
