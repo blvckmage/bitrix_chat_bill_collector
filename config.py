@@ -13,6 +13,9 @@ BITRIX_CHAT_ID = os.getenv("BITRIX_CHAT_ID", "")
 # ID пользователя — заведующего складом
 MANAGER_USER_ID = os.getenv("MANAGER_USER_ID", "")
 
+# ID зарегистрированного чат-бота (для отправки сообщений от его имени через imbot.message.add)
+BITRIX_BOT_ID = os.getenv("BITRIX_BOT_ID", "")
+
 # Секретный токен — Битрикс24 присылает его вместе с событием, проверяем подлинность запроса
 SECRET_TOKEN = os.getenv("SECRET_TOKEN", "")
 
@@ -23,5 +26,5 @@ CSV_PATH = os.getenv("CSV_PATH", "./deliveries.csv")
 TIMEZONE = "Asia/Almaty"  # UTC+5, эквивалент Астаны
 
 # Время ежедневного отчёта
-REPORT_HOUR = 18
-REPORT_MINUTE = 0
+REPORT_HOUR = 17
+REPORT_MINUTE = 30

@@ -16,14 +16,15 @@ from config import (
 )
 from storage import init_storage, add_delivery
 from bitrix import send_message_to_chat, get_user_name
-from report import build_and_send_report
+from report import build_and_send_report, send_report_to_chat
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("bot")
 
-# Регулярка: команда /готово, опционально слово "Накладная", символ № и сам номер
+# Регулярка: команда /готово, опционально слово "Накладная", символ № и сам номер.
+# Номер обязателен — без него совпадения нет, и бот попросит уточнить.
 INVOICE_RE = re.compile(
-    r"/готово\b[\s\S]*?(?:накладн\w*)?\s*№?\s*([A-Za-zА-Яа-я0-9\-_/]+)?",
+    r"/готово\s+(?:накладн\w*\s*)?№?\s*([A-Za-zА-Яа-я0-9\-_/]+)",
     re.IGNORECASE,
 )
 
@@ -77,11 +78,17 @@ async def bitrix_webhook(request: Request) -> dict:
         or body.get("token")
     )
     if SECRET_TOKEN and received_token != SECRET_TOKEN:
-        logger.warning("Неверный токен в запросе")
+        logger.warning("Неверный токен в запросе. Получено: %r, ожидалось: %r",
+                       received_token, SECRET_TOKEN)
         raise HTTPException(status_code=403, detail="invalid token")
 
     # Имя события и полезная нагрузка
     event = body.get("event") or ""
+
+    # Примечание: бот зарегистрирован в режиме «Передавать боту сообщения»,
+    # который не выдаёт OAuth access_token. Поэтому ответы уходят через
+    # im.message.add от имени владельца вебхука, а не от лица бота.
+    auth_context = None
     # Поля сообщения приходят с префиксом data[PARAMS][...] или data[FIELDS_AFTER][...].
     # Извлекаем стандартные поля события ONIMMESSAGEADD / OnImBotMessageAdd.
     chat_id = (
@@ -96,23 +103,28 @@ async def bitrix_webhook(request: Request) -> dict:
     if BITRIX_CHAT_ID and str(chat_id).lstrip("chat") not in (str(BITRIX_CHAT_ID), f"chat{BITRIX_CHAT_ID}"):
         return {"status": "ignored", "reason": "other chat"}
 
+    text_lower = message_text.lower()
+
+    # Команда /отчет — отправить сводный отчёт прямо в чат
+    if "/отчет" in text_lower or "/отчёт" in text_lower:
+        logger.info("Запрошен отчёт пользователем %s", from_user_id)
+        await send_report_to_chat(BITRIX_CHAT_ID, auth_context=auth_context)
+        return {"status": "ok", "result": "report sent"}
+
     # Реагируем только на /готово
-    if "/готово" not in message_text.lower():
+    if "/готово" not in text_lower:
         return {"status": "ignored", "reason": "not a command"}
 
     logger.info("Получена команда от user=%s: %s", from_user_id, message_text)
 
     match = INVOICE_RE.search(message_text)
-    invoice = match.group(1).strip() if match and match.group(1) else None
-
-    # Защита от ложного срабатывания: иногда regex захватит само слово "Накладная"
-    if invoice and invoice.lower().startswith("накладн"):
-        invoice = None
+    invoice = match.group(1).strip() if match else None
 
     if not invoice:
         await send_message_to_chat(
             BITRIX_CHAT_ID,
             "⚠️ Пожалуйста, укажите номер накладной. Пример: /готово Накладная №1234",
+            auth_context=auth_context,
         )
         return {"status": "ok", "result": "asked for invoice"}
 
@@ -125,6 +137,13 @@ async def bitrix_webhook(request: Request) -> dict:
     )
 
     logger.info("Сохранена доставка: №%s — %s", invoice, courier_name)
+
+    # Подтверждение в чат от имени бота
+    await send_message_to_chat(
+        BITRIX_CHAT_ID,
+        f"✅ Сохранил доставку №{invoice} — {courier_name}",
+        auth_context=auth_context,
+    )
     return {"status": "ok", "saved": {"invoice": invoice, "courier": courier_name}}
 
 
