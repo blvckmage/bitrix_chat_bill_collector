@@ -47,7 +47,8 @@ async def send_message_to_chat(
     text: str,
     auth_context: dict | None = None,
 ) -> dict:
-    """Отправить сообщение в групповой чат от имени бота."""
+    """Отправить сообщение в групповой чат от имени бота.
+    Возвращает ответ Битрикса целиком — в поле 'result' будет message_id."""
     dialog_id = f"chat{chat_id}" if str(chat_id).isdigit() else str(chat_id)
     if BITRIX_BOT_ID:
         return await call_method_as_bot("imbot.message.add", {
@@ -55,7 +56,6 @@ async def send_message_to_chat(
             "DIALOG_ID": dialog_id,
             "MESSAGE": text,
         }, auth_context)
-    # Fallback — если бот ещё не зарегистрирован
     return await call_method("im.message.add", {"DIALOG_ID": dialog_id, "MESSAGE": text})
 
 
@@ -88,6 +88,20 @@ async def get_user_name(user_id: str | int) -> str:
     return f"User#{user_id}"
 
 
+async def bind_event(auth_context: dict, event_name: str, handler_url: str) -> dict:
+    """Подписать приложение на общее событие через event.bind."""
+    client_endpoint = auth_context["client_endpoint"].rstrip("/") + "/"
+    url = f"{client_endpoint}event.bind.json"
+    body = {
+        "event": event_name,
+        "handler": handler_url,
+        "auth": auth_context["access_token"],
+    }
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        r = await client.post(url, json=body)
+        return r.json()
+
+
 async def register_chatbot(auth_context: dict, handler_url: str) -> int | None:
     """Зарегистрировать чат-бота через imbot.register, используя OAuth-контекст.
     Возвращает BOT_ID или None при неудаче."""
@@ -99,6 +113,7 @@ async def register_chatbot(auth_context: dict, handler_url: str) -> int | None:
         "EVENT_MESSAGE_ADD": handler_url,
         "EVENT_WELCOME_MESSAGE": handler_url,
         "EVENT_BOT_DELETE": handler_url,
+        "EVENT_MESSAGE_LIKE": handler_url,   # реакции на сообщения бота
         "PROPERTIES": {
             "NAME": "Бот доставок",
             "COLOR": "AQUA",
